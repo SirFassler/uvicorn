@@ -1,5 +1,6 @@
 import asyncio
 import signal
+import sys
 from asyncio import Event
 
 import httpx2
@@ -111,3 +112,83 @@ async def test_sigint_deny_request_after_triggered(unused_tcp_port: int, caplog)
             await asyncio.sleep(0.1)  # next tick
             with pytest.raises(httpx2.ConnectError):
                 await client.get(f"http://127.0.0.1:{unused_tcp_port}")
+
+
+@pytest.mark.anyio
+async def test_sigint_during_lifespan_startup(unused_tcp_port: int) -> None:
+    startup_started = Event()
+
+    async def hanging_lifespan_app(scope, receive, send):
+        message = await receive()
+        assert message["type"] == "lifespan.startup"
+        startup_started.set()
+        await asyncio.sleep(5000)
+
+    config = Config(app=hanging_lifespan_app, reload=False, port=unused_tcp_port, lifespan="on")
+    server = Server(config)
+
+    with assert_signal(signal.SIGINT):
+        serve_task = asyncio.create_task(server.serve())
+        await startup_started.wait()
+
+        server.handle_exit(sig=signal.SIGINT, frame=None)
+
+        async with asyncio.timeout(1.0):
+            await serve_task
+
+    assert server.should_exit is True
+    assert server.started is False
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGTERM is not supported on Windows")
+async def test_sigterm_during_lifespan_startup(unused_tcp_port: int) -> None:
+    startup_started = Event()
+
+    async def hanging_lifespan_app(scope, receive, send):
+        message = await receive()
+        assert message["type"] == "lifespan.startup"
+        startup_started.set()
+        await asyncio.sleep(5000)
+
+    config = Config(app=hanging_lifespan_app, reload=False, port=unused_tcp_port, lifespan="on")
+    server = Server(config)
+
+    with assert_signal(signal.SIGTERM):
+        serve_task = asyncio.create_task(server.serve())
+        await startup_started.wait()
+
+        server.handle_exit(sig=signal.SIGTERM, frame=None)
+
+        async with asyncio.timeout(1.0):
+            await serve_task
+
+    assert server.should_exit is True
+    assert server.started is False
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform != "win32", reason="SIGBREAK is only supported on Windows")
+async def test_sigbreak_during_lifespan_startup(unused_tcp_port: int) -> None:  # pragma: py-not-win32
+    startup_started = Event()
+
+    async def hanging_lifespan_app(scope, receive, send):
+        message = await receive()
+        assert message["type"] == "lifespan.startup"
+        startup_started.set()
+        await asyncio.sleep(5000)
+
+    config = Config(app=hanging_lifespan_app, reload=False, port=unused_tcp_port, lifespan="on")
+    server = Server(config)
+
+    with assert_signal(signal.SIGBREAK):  # type: ignore[attr-defined]
+        serve_task = asyncio.create_task(server.serve())
+        await startup_started.wait()
+
+        server.handle_exit(sig=signal.SIGBREAK, frame=None)  # type: ignore[attr-defined]
+
+        async with asyncio.timeout(1.0):
+            await serve_task
+
+    assert server.should_exit is True
+    assert server.started is False

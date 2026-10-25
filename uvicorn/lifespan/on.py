@@ -53,7 +53,15 @@ class LifespanOn:
         # See https://github.com/Kludex/uvicorn/pull/972
         startup_event: LifespanStartupEvent = {"type": "lifespan.startup"}
         await self.receive_queue.put(startup_event)
-        await self.startup_event.wait()
+        try:
+            await self.startup_event.wait()
+        except asyncio.CancelledError:
+            main_lifespan_task.cancel()
+            try:
+                await main_lifespan_task
+            except asyncio.CancelledError:
+                pass
+            raise
 
         if self.startup_failed or (self.error_occurred and self.config.lifespan == "on"):
             self.logger.error("Application startup failed. Exiting.")
@@ -84,6 +92,8 @@ class LifespanOn:
                 "state": self.state,
             }
             await app(scope, self.receive, self.send)
+        except asyncio.CancelledError:
+            pass
         except BaseException as exc:
             self.asgi = None
             self.error_occurred = True

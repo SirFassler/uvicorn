@@ -113,7 +113,18 @@ class Server:
             logger.info(message, process_id, extra={"color_message": color_message})
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
-        await self.lifespan.startup()
+        lifespan_task = asyncio.create_task(self.lifespan.startup())
+        while not lifespan_task.done():
+            if self.force_exit or (self.should_exit and self._captured_signals):
+                lifespan_task.cancel()
+                try:
+                    await lifespan_task
+                except asyncio.CancelledError:
+                    pass
+                return
+            await asyncio.wait({lifespan_task}, timeout=0.05)
+
+        await lifespan_task
         if self.lifespan.should_exit:
             sys.exit(STARTUP_FAILURE)
 
